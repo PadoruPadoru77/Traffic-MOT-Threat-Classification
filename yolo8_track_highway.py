@@ -8,6 +8,8 @@ from ultralytics import YOLO
 
 import supervision as sv
 
+from tqdm import tqdm
+
 
 # COCO ids: car=2, motorcycle=3, bus=5, truck=7
 VEHICLE_IDS = {2, 3, 5, 7}
@@ -15,17 +17,17 @@ VEHICLE_IDS = {2, 3, 5, 7}
 
 def parse_args():
     p = argparse.ArgumentParser("YOLOv8 tiled detection + ByteTrack")
-    p.add_argument("--video", type=str, default="highway3.mp4")
+    p.add_argument("--video", type=str, default="highway.mp4")
     p.add_argument("--model", type=str, default="yolov8s.pt")
-    p.add_argument("--out", type=str, default="tracked_tiled3.mp4")
-    p.add_argument("--conf", type=float, default=0.10)
+    p.add_argument("--out", type=str, default="tracked_tiled.mp4")
+    p.add_argument("--conf", type=float, default=0.30)
     p.add_argument("--iou", type=float, default=0.6)
 
     # Tiling params
-    p.add_argument("--tile", type=int, default=1080, help="Tile size (square). 640 is a good start.")
-    p.add_argument("--overlap", type=float, default=0.1, help="Tile overlap ratio (0.15–0.30 typical).")
+    p.add_argument("--tile", type=int, default=1080, help="Tile size (square)")
+    p.add_argument("--overlap", type=float, default=0.1, help="Tile overlap ratio")
 
-    # Optional: only keep vehicles
+    # Optional
     p.add_argument("--vehicles_only", action="store_true", default=True, help="Filter to car/truck/bus/motorcycle")
 
     # Device
@@ -170,6 +172,7 @@ def main():
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Could not open {video_path}")
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -184,6 +187,8 @@ def main():
 
     frame_idx = 0
     t0 = time.time()
+
+    pbar = tqdm(total=total_frames, desc="Processing", unit="frame") #Progress bar
 
     while True:
         ok, frame = cap.read()
@@ -228,7 +233,10 @@ def main():
 
         writer.write(frame)
         frame_idx += 1
+        
+        pbar.update(1)
 
+    pbar.close()
     cap.release()
     writer.release()
 
