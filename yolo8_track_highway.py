@@ -10,6 +10,9 @@ import supervision as sv
 
 from tqdm import tqdm
 
+from collections import deque, defaultdict
+import math
+
 
 # COCO ids: car=2, motorcycle=3, bus=5, truck=7
 VEHICLE_IDS = {2, 3, 5, 7}
@@ -29,6 +32,7 @@ def parse_args():
 
     # Optional
     p.add_argument("--vehicles_only", action="store_true", default=True, help="Filter to car/truck/bus/motorcycle")
+    p.add_argument("--threat_class", action="store_true", default=True, help="Show threat classification or normal")
 
     # Device
     p.add_argument("--device", type=str, default="cuda", help="cuda, cuda:0, cpu")
@@ -152,6 +156,27 @@ def tiled_detect(model, frame, tile, overlap, conf, iou, vehicles_only):
     return boxes[keep_indices], scores[keep_indices], clss[keep_indices]
 
 
+#--------Threat Classifications---------
+def xyxy_to_centroid(xyxy):
+    x1, y1, x2, y2 = xyxy
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+def ema(prev, new, alpha=0.3):
+    # exponential moving average for smoothing
+    return new if prev is None else (alpha * new + (1 - alpha) * prev)
+
+def point_in_poly(pt, poly):
+    # poly: list of (x,y) vertices; ray casting
+    x, y = pt
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if ((y1 > y) != (y2 > y)) and (x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-9) + x1):
+            inside = not inside
+    return inside
+
 def main():
     args = parse_args()
 
@@ -185,6 +210,20 @@ def main():
     # ByteTrack tracker (for stable IDs)
     tracker = sv.ByteTrack()
 
+    # --- Threat system params ---
+    loiter_radius_px = 40          # how far it can wander and still be "loitering"
+    loiter_time_s = 5.0           # seconds staying within radius
+    speed_thresh_px_s = 350.0      # "too fast" threshold in pixels/sec (tune!)
+    min_age_s = 1.0                # ignore brand-new tracks for threat decisions
+
+    # Optional: define a zone polygon (x,y). Set to None to disable zone checks.
+    # Example: a rectangular ROI
+    zone_poly = None
+    # zone_poly = [(100, 600), (1820, 600), (1820, 980), (100, 980)]
+
+    # --- Per-track state ---
+    tracks = {}  # track_id -> dict of state
+
     frame_idx = 0
     t0 = time.time()
 
@@ -216,20 +255,110 @@ def main():
         tracked = tracker.update_with_detections(detections)
 
         # Draw
-        for xyxy, conf, cls_id, track_id in zip(
-            tracked.xyxy, tracked.confidence, tracked.class_id, tracked.tracker_id
-        ):
-            x1, y1, x2, y2 = map(int, xyxy.tolist())
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(
-                frame,
-                f"ID {int(track_id)} cls {int(cls_id)} {float(conf):.2f}",
-                (x1, max(20, y1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2
-            )
+        if not args.threat_class:
+            for xyxy, conf, cls_id, track_id in zip(
+                tracked.xyxy, tracked.confidence, tracked.class_id, tracked.tracker_id
+            ):
+                x1, y1, x2, y2 = map(int, xyxy.tolist())
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    frame,
+                    f"ID {int(track_id)} cls {int(cls_id)} {float(conf):.2f}",
+                    (x1, max(20, y1 - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2
+                )
+        else:
+            now_s = frame_idx / fps
+
+            for xyxy, conf, cls_id, track_id in zip(
+                tracked.xyxy, tracked.confidence, tracked.class_id, tracked.tracker_id
+            ):
+                track_id = int(track_id)
+                x1, y1, x2, y2 = map(int, xyxy.tolist())
+                cx, cy = xyxy_to_centroid((x1, y1, x2, y2))
+
+                # Init track state
+                st = tracks.get(track_id)
+                if st is None:
+                    st = {
+                        "start_s": now_s,
+                        "last_s": now_s,
+                        "last_c": (cx, cy),
+                        "speed_ema": None,
+                        "anchor_c": (cx, cy),       # reference point for loiter radius
+                        "loiter_start_s": now_s,    # when it began staying near anchor
+                        "loiter_s": 0.0,
+                        "last_seen_frame": frame_idx
+                    }
+                    tracks[track_id] = st
+
+                # Update speed (pixels/sec)
+                dt = max(now_s - st["last_s"], 1e-6)
+                dx = cx - st["last_c"][0]
+                dy = cy - st["last_c"][1]
+                dist = math.hypot(dx, dy)
+                speed = dist / dt
+                st["speed_ema"] = ema(st["speed_ema"], speed, alpha=0.25)
+
+                # Loiter logic
+                # If it strays too far from anchor, reset the loiter anchor
+                anchor_dx = cx - st["anchor_c"][0]
+                anchor_dy = cy - st["anchor_c"][1]
+                anchor_dist = math.hypot(anchor_dx, anchor_dy)
+
+                in_zone = True if zone_poly is None else point_in_poly((cx, cy), zone_poly)
+
+                if in_zone and anchor_dist <= loiter_radius_px:
+                    # still loitering near anchor
+                    st["loiter_s"] = now_s - st["loiter_start_s"]
+                else:
+                    # moved too far (or left zone) -> reset loiter baseline
+                    st["anchor_c"] = (cx, cy)
+                    st["loiter_start_s"] = now_s
+                    st["loiter_s"] = 0.0
+
+                # Threat classification
+                age_s = now_s - st["start_s"]
+                too_fast = (st["speed_ema"] is not None) and (st["speed_ema"] >= speed_thresh_px_s)
+                loitering = (st["loiter_s"] >= loiter_time_s)
+
+                # Simple threat levels: NONE / WARN / ALERT
+                if age_s < min_age_s:
+                    threat = "INIT"
+                elif too_fast or loitering:
+                    threat = "WARN"
+                else:
+                    threat = "OK"
+
+                # Choose color per threat
+                if threat == "ALERT":
+                    color = (0, 0, 255)
+                elif threat == "WARN":
+                    color = (0, 165, 255)
+                elif threat == "INIT":
+                    color = (255, 255, 0)
+                else:
+                    color = (0, 255, 0)
+
+                # Draw
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                label = f"ID {track_id} {threat} spd {st['speed_ema']:.0f}px/s loit {st['loiter_s']:.1f}s"
+                cv2.putText(frame, label, (x1, max(20, y1 - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                # Update last
+                st["last_s"] = now_s
+                st["last_c"] = (cx, cy)
+                st["last_seen_frame"] = frame_idx
+
+        # Remove tracks not seen for N frames
+        max_missed = int(2.0 * fps)  # 2 seconds
+        dead = [tid for tid, st in tracks.items() if frame_idx - st["last_seen_frame"] > max_missed]
+        for tid in dead:
+            del tracks[tid]
 
         writer.write(frame)
         frame_idx += 1
