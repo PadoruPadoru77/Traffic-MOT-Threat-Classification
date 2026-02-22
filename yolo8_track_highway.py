@@ -1,7 +1,6 @@
 import argparse
 import time
 from pathlib import Path
-import torch
 
 import cv2
 import numpy as np
@@ -16,18 +15,18 @@ VEHICLE_IDS = {2, 3, 5, 7}
 
 def parse_args():
     p = argparse.ArgumentParser("YOLOv8 tiled detection + ByteTrack")
-    p.add_argument("--video", type=str, default="highway.mp4")
-    p.add_argument("--model", type=str, default="yolov8m.pt")
-    p.add_argument("--out", type=str, default="tracked_tiled.mp4")
-    p.add_argument("--conf", type=float, default=0.07)
+    p.add_argument("--video", type=str, default="highway3.mp4")
+    p.add_argument("--model", type=str, default="yolov8s.pt")
+    p.add_argument("--out", type=str, default="tracked_tiled3.mp4")
+    p.add_argument("--conf", type=float, default=0.10)
     p.add_argument("--iou", type=float, default=0.6)
 
     # Tiling params
-    p.add_argument("--tile", type=int, default=512, help="Tile size (square). 640 is a good start.")
-    p.add_argument("--overlap", type=float, default=0.30, help="Tile overlap ratio (0.15–0.30 typical).")
+    p.add_argument("--tile", type=int, default=1080, help="Tile size (square). 640 is a good start.")
+    p.add_argument("--overlap", type=float, default=0.1, help="Tile overlap ratio (0.15–0.30 typical).")
 
     # Optional: only keep vehicles
-    p.add_argument("--vehicles_only", action="store_true", help="Filter to car/truck/bus/motorcycle")
+    p.add_argument("--vehicles_only", action="store_true", default=True, help="Filter to car/truck/bus/motorcycle")
 
     # Device
     p.add_argument("--device", type=str, default="cuda", help="cuda, cuda:0, cpu")
