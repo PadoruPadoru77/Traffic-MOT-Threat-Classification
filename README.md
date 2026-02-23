@@ -10,4 +10,12 @@ in order to increase the confidence scores of smaller objects. After testing, th
 
 The speed was calculated by how many pixels a detected car has moved, and it it crossed a threshold, it will classify it as "WARN". Likewise with the loiting, every car has its own timer to detect how long it has remained in a certain area. Once it has loitered for more than 5 seconds, it will classify it as a "WARN". This project uses ByteTrack to track all information of objects it recognises. If a tracked object is not seen in the frame for more than 2 seconds, it will automatically delete its information from the bytetrack in order to save space.
 
+Inference Speed:
+The project script was run on a rtx 4060 GPU with 2 different video sizes. The first video was of size [2160x3840] and has an average inference time of 3.8 fps. The second video was tested on [1080x1920] and has an average inference time of 16.4 fps.
+
 Overall, this has been an insightful and fullfilling project to depend my understanding on computer vision and what its capabilities are.
+
+<p align="center">
+  <img width="500" alt="image" src="https://github.com/user-attachments/assets/2b305d5a-3594-4572-97f8-5cee054aa1f6" /> <img width="500" alt="image" src="https://github.com/user-attachments/assets/1af29c65-9203-49ce-a019-4a79e320dc7b" />
+</p>
+
